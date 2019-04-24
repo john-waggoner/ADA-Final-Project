@@ -1,0 +1,224 @@
+---
+title: "ADA Project"
+author: "Becca Woofter, John Waggoner"
+date: "Due 4/24/2019"
+output: html_document
+---
+
+#Import Data from Desktop & Load Packages
+```{r}
+library(Rcpp)
+library(tidyverse)
+library(Hmisc)
+library(survival)
+library(ggfortify)
+library(survminer)
+library(lmtest)
+library(stargazer)
+library(MASS)
+nhanes_demo <- sasxport.get("https://wwwn.cdc.gov/Nchs/Nhanes/2015-2016/DEMO_I.XPT")
+nhanes_sexbeh <- sasxport.get("https://wwwn.cdc.gov/Nchs/Nhanes/2015-2016/SXQ_I.XPT")
+nhanes_drug<- sasxport.get("https://wwwn.cdc.gov/Nchs/Nhanes/2015-2016/DUQ_I.XPT")
+
+```
+
+#Create dataset & Rename vars & Code NAs
+```{r}
+#Remove unnecessary variables
+nhanes_demo<-subset(nhanes_demo, select= c("seqn", "riagendr", "ridageyr", "ridreth3"))
+nhanes_drug<-subset(nhanes_drug, select=c("seqn", "duq210", "duq260", "duq300", "duq340", "duq390"))
+nhanes_sexbeh<-subset(nhanes_sexbeh, select=c("seqn","sxd021", "sxd031", "sxq295", "sxq296"))
+
+#Combine datasets
+nhanes_merge<-merge(nhanes_demo,nhanes_sexbeh)
+nhanes<-merge(nhanes_merge, nhanes_drug)
+
+#Recode missing values
+nhanes$sxd031[nhanes$sxd031==77|nhanes$sxd031==99]<- NA
+nhanes$duq210[nhanes$duq210==777|nhanes$duq210==999]<-NA
+nhanes$duq260[nhanes$duq260==777|nhanes$duq260==999]<-NA
+nhanes$duq300[nhanes$duq300==777|nhanes$duq300==999]<-NA
+nhanes$duq340[nhanes$duq340==777|nhanes$duq340==999]<-NA
+nhanes$duq390[nhanes$duq390==777|nhanes$duq390==999]<-NA
+nhanes$sxq295[nhanes$sxq295==7|nhanes$sxq295==9]<-NA
+nhanes$sxq296[nhanes$sxq296==7|nhanes$sxq296==9]<-NA
+nhanes$riagendr[nhanes$riagendr==2]<-0
+nhanes$sxd021[nhanes$sxd021 == 7] <- NA
+nhanes$sxd021[nhanes$sxd021 == 2] <- 0
+
+#Rename variables
+colnames(nhanes)<-c("id", "male", "age_at_survey", "race", "ever_sex", "age_first_sex","sex_ident_f", "sex_ident_m", "age_first_marj", "age_first_cocaine", "age_first_heroin", "age_first_meth", "age_first_inject")
+
+#Label levels for existing categorical variables
+nhanes$male<-factor(nhanes$male, 
+                    levels=c(0,1),
+                    labels=c("Female", "Male"))
+nhanes$race<-factor(nhanes$race,
+                    levels=c(1,2,3,4,6,7),
+                    labels=c("Mexican American", "Other Hispanic", "Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic Asian", "Other/Multi"))
+nhanes$race<-relevel(nhanes$race, ref="Non-Hispanic White")
+nhanes$ever_sex_f <- factor(nhanes$ever_sex, 
+                            labels =c("Never Had Sex", "Ever Had Sex"))
+
+```
+
+#Create new variables & Remove missing obs
+```{r}
+#Create lgbt variable
+nhanes$lgbt[nhanes$sex_ident_f == 1|
+            nhanes$sex_ident_f == 3|
+            nhanes$sex_ident_f == 4|
+            nhanes$sex_ident_m == 1|
+            nhanes$sex_ident_m == 3|
+            nhanes$sex_ident_m == 4] <- 1
+nhanes$lgbt[nhanes$sex_ident_f == 2|
+            nhanes$sex_ident_m == 2] <- 0
+nhanes$lgbt[nhanes$sex_ident_f == 6|
+            nhanes$sex_ident_m == 6] <- NA
+
+nhanes$lgbt_f <- factor(nhanes$lgbt, labels = c(
+  "Heterosexual", "Not exclusively Heterosexual"))
+
+
+#Create missing values that logically code correctly. Those who have done drugs but never had sex must still end up in the drug category. Those who have never done drugs or had sex must end up in the non-drug category. Ergo, the number indicating "never had sex" must be less than "never done drugs". 
+nhanes$age_first_sex[is.na(nhanes$age_first_sex)] <- 99
+nhanes$age_first_cocaine[is.na(nhanes$age_first_cocaine)] <- 100
+nhanes$age_first_heroin[is.na(nhanes$age_first_heroin)] <- 100
+nhanes$age_first_marj[is.na(nhanes$age_first_marj)] <- 100
+nhanes$age_first_meth[is.na(nhanes$age_first_meth)] <- 100
+nhanes$age_first_inject[is.na(nhanes$age_first_inject)] <- 100
+
+#Create each drug use variable individually
+
+nhanes$coc_sex[nhanes$age_first_cocaine <= nhanes$age_first_sex] <- 1
+nhanes$coc_sex[nhanes$age_first_cocaine > nhanes$age_first_sex] <- 0
+nhanes$coc_sex_f <- factor(nhanes$coc_sex, labels = c("No Cocaine before 1st sex",
+                                                      "Cocaine use before 1st sex"))
+
+nhanes$marj_sex[nhanes$age_first_marj <= nhanes$age_first_sex] <- 1
+nhanes$marj_sex[nhanes$age_first_marj > nhanes$age_first_sex] <- 0
+nhanes$marj_sex_f <- factor(nhanes$marj_sex, labels = c("No MJ use Before 1st sex",
+                                                        "MJ use before 1st sex"))
+
+nhanes$her_sex[nhanes$age_first_heroin <= nhanes$age_first_sex] <- 1
+nhanes$her_sex[nhanes$age_first_heroin > nhanes$age_first_sex] <- 0
+nhanes$her_sex_f <- factor(nhanes$her_sex, labels = c("No heorin use before 1st sex",
+                                                      "Heroin use before 1st sex"))
+
+nhanes$meth_sex[nhanes$age_first_meth <= nhanes$age_first_sex] <- 1
+nhanes$meth_sex[nhanes$age_first_meth > nhanes$age_first_sex] <- 0
+nhanes$meth_sex_f <- factor(nhanes$meth_sex, labels = c("No meth use before 1st sex", "Meth use before 1st sex"))
+
+nhanes$inj_sex[nhanes$age_first_inject <= nhanes$age_first_sex] <- 1
+nhanes$inj_sex[nhanes$age_first_inject > nhanes$age_first_sex] <- 0
+nhanes$inj_sex_f <- factor(nhanes$inj_sex, labels = c("No Injected drugs before 1st sex", "Injected Drugs before 1st sex"))
+
+#Combine individual drug variables into overall binary
+
+nhanes$drg_sex[nhanes$coc_sex == 1|
+               nhanes$marj_sex == 1|
+               nhanes$her_sex == 1|
+               nhanes$meth_sex == 1|
+               nhanes$inj_sex == 1] <- 1
+nhanes$drg_sex[nhanes$coc_sex == 0 &
+               nhanes$marj_sex == 0 &
+               nhanes$her_sex == 0 &
+               nhanes$meth_sex == 0 &
+               nhanes$inj_sex == 0] <- 0
+
+nhanes$drg_sex_f <- factor(nhanes$drg_sex, labels = c("No Drug use prior to first Sex", "Drug use prior to first sex"))
+
+#Create new variable for person time used in CPH
+
+nhanes$p_time <- ifelse(nhanes$ever_sex_f == "Never Had Sex", nhanes$age_at_survey, nhanes$age_first_sex)
+
+#Removed those missing on any variable except lgbt
+nhanes <- subset(nhanes, !is.na(nhanes$ever_sex))
+nhanes <- subset(nhanes, !is.na(nhanes$age_first_sex))
+
+#Remove those who did not answer sexual orientation - separate for sensitivity analysis later
+nhanes_lgbt <- subset(nhanes, !is.na(nhanes$lgbt))
+
+```
+
+#Demographics Tables
+```{r}
+table(nhanes_lgbt$ever_sex)
+table(nhanes_lgbt$race)
+table(nhanes_lgbt$drg_sex)
+table(nhanes_lgbt$lgbt)
+```
+
+#KM curves
+```{r}
+#Create KM model
+sex.surv <- survfit(Surv(p_time, ever_sex) ~drg_sex_f, nhanes_lgbt)
+
+#Plot overall
+ggsurvplot(sex.surv, conf.int = TRUE, legend.labs=c("No Drug use prior to first Sex", "Drug use prior to first sex"), xlim = c(0,50), break.time.by = 5, ggtheme = theme_minimal()) 
+
+#Plot by gender
+ggsurvplot(sex.surv, conf.int = TRUE, legend.labs=c("No Drug use prior to first Sex", "Drug use prior to first sex"), xlim = c(0,50), break.time.by = 5, ggtheme = theme_minimal(), facet.by = "male") 
+
+#Plot by sexual orientation
+ggsurvplot(sex.surv, conf.int = TRUE, legend.labs=c("No Drug use prior to first Sex", "Drug use prior to first sex"), xlim = c(0,50), break.time.by = 5, ggtheme = theme_minimal(), facet.by = "lgbt_f")
+
+#Plot by race
+ggsurvplot(sex.surv, conf.int = TRUE, legend.labs=c("No Drug use prior to first Sex", "Drug use prior to first sex"), xlim = c(0,50), break.time.by = 5, ggtheme = theme_minimal(), facet.by = "race")
+
+```
+
+#Log-Rank test
+```{r}
+#Log-Rank test for prior drug use
+survdiff(Surv(p_time, ever_sex) ~ drg_sex_f, data=nhanes_lgbt)
+pairwise_survdiff(Surv(p_time, ever_sex) ~ drg_sex_f, data=nhanes_lgbt)
+
+```
+
+#CPH
+```{r}
+#Basic model - drug use only
+drg.mod <- coxph(Surv(p_time, ever_sex)~drg_sex_f, nhanes_lgbt)
+summary(drg.mod)
+
+#Fully adjusted cox PH model
+adj.mod <- coxph(Surv(p_time, ever_sex)~drg_sex_f + lgbt_f + male + race, nhanes_lgbt)
+summary(adj.mod)
+
+#LR test to see if significant difference after adding other vars 
+lrtest(drg.mod, adj.mod)
+
+#Test assumption for CPH 
+test.adj.mod<-cox.zph(adj.mod)
+test.adj.mod
+plot(test.adj.mod, resid=F)
+
+```
+
+#Sensitivity analysis for missing lgbt values
+```{r}
+nhanes_m1 <- nhanes
+nhanes_m2 <- nhanes
+
+table(nhanes_m1$lgbt, useNA = c("always"))
+
+#missing as lgbt
+nhanes_m1$lgbt[is.na(nhanes_m1$lgbt)] <- 1
+nhanes_m1$lgbt_f <- factor(nhanes_m1$lgbt, labels = c(
+  "Heterosexual", "Not exclusively Heterosexual"))
+
+adj.mod.m1 <- coxph(Surv(p_time, ever_sex)~drg_sex_f + lgbt_f + male + race, nhanes_m1)
+summary(adj.mod.m1)
+
+#missing as non-lgbt
+nhanes_m2$lgbt[is.na(nhanes_m2$lgbt)] <- 0
+nhanes_m2$lgbt_f <- factor(nhanes_m2$lgbt, labels = c(
+  "Heterosexual", "Not exclusively Heterosexual"))
+
+adj.mod.m2 <- coxph(Surv(p_time, ever_sex)~drg_sex_f + lgbt_f + male + race, nhanes_m2)
+summary(adj.mod.m2)
+
+```
+
+
